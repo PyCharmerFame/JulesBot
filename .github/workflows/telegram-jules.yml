@@ -6,6 +6,7 @@ name: Telegram to GitHub Issues
     - cron: "*/5 * * * *"
 
 permissions:
+  contents: read
   issues: write
   actions: write
 
@@ -14,6 +15,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
       - name: Read Telegram and create issue
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
@@ -35,6 +39,7 @@ jobs:
 
           if [ -n "$TASK" ]; then
             gh issue create \
+              --repo "${{ github.repository }}" \
               --title "Telegram task" \
               --body "$TASK"
 
