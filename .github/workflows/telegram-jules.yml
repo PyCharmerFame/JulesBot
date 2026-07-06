@@ -33,19 +33,23 @@ jobs:
             exit 0
           fi
 
-          PROMPT="You are working in GitHub repository PyCharmerFame/JulesBot.
+          cat > prompt.txt <<EOF
+          You are working in GitHub repository PyCharmerFame/JulesBot.
 
-Task from Telegram:
-${TASK}
+          Task from Telegram:
+          ${TASK}
 
-Rules:
-- Analyze the repository first.
-- Make the smallest safe changes.
-- Update README if needed.
-- Create a Pull Request.
-- Do not ask questions. Decide and proceed."
+          Rules:
+          - Analyze the repository first.
+          - Make the smallest safe changes.
+          - Update README if needed.
+          - Create a Pull Request.
+          - Do not ask questions. Decide and proceed.
+          EOF
 
-          curl -f 'https://jules.googleapis.com/v1alpha/sessions' \
+          PROMPT="$(cat prompt.txt)"
+
+          curl -f "https://jules.googleapis.com/v1alpha/sessions" \
             -X POST \
             -H "Content-Type: application/json" \
             -H "X-Goog-Api-Key: ${JULES_API_KEY}" \
