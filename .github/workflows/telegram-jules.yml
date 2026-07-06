@@ -8,8 +8,6 @@ name: Telegram to GitHub Issues
 permissions:
   contents: read
   issues: write
-  actions: write
-  administration: write
 
 jobs:
   telegram-to-issue:
@@ -23,13 +21,8 @@ jobs:
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          LAST_TG_UPDATE_ID: ${{ vars.LAST_TG_UPDATE_ID }}
-          GH_TOKEN: ${{ github.token }}
         run: |
-          OFFSET=$((LAST_TG_UPDATE_ID + 1))
-          curl -s "https://api.telegram.org/bot${TG_BOT_TOKEN}/getUpdates?offset=${OFFSET}" > updates.json
-
-          LATEST_ID=$(jq '[.result[].update_id] | max // empty' updates.json)
+          curl -s "https://api.telegram.org/bot${TG_BOT_TOKEN}/getUpdates" > updates.json
 
           TASK=$(jq -r --arg chat "$TG_CHAT_ID" '
             .result[]
@@ -46,13 +39,9 @@ jobs:
 
             curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
               -d chat_id="${TG_CHAT_ID}" \
-              -d text="✅ Задача добавлена в GitHub Issues. Теперь открой Jules и попроси взять последнюю issue."
+              -d text="✅ Задача добавлена в GitHub Issues."
+          else
+            echo "No /task message found"
           fi
-
-          if [ -n "$LATEST_ID" ]; then
-            gh api \
-              --method PATCH \
-              repos/${{ github.repository }}/actions/variables/LAST_TG_UPDATE_ID \
-              -f name=LAST_TG_UPDATE_ID \
-              -f value="$LATEST_ID"
-          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
