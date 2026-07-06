@@ -1,4 +1,4 @@
-name: Telegram to GitHub Issues
+name: Telegram to Jules
 
 "on":
   workflow_dispatch:
@@ -7,20 +7,17 @@ name: Telegram to GitHub Issues
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
-  telegram-to-issue:
+  telegram-to-jules:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Read Telegram and create issue
+      - name: Read Telegram and trigger Jules
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
         run: |
           curl -s "https://api.telegram.org/bot${TG_BOT_TOKEN}/getUpdates" > updates.json
 
@@ -31,17 +28,42 @@ jobs:
             | .message.text
           ' updates.json | tail -n 1 | sed 's#^/task ##')
 
-          if [ -n "$TASK" ]; then
-            gh issue create \
-              --repo "${{ github.repository }}" \
-              --title "Telegram task" \
-              --body "$TASK"
-
-            curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT_ID}" \
-              -d text="✅ Задача добавлена в GitHub Issues."
-          else
+          if [ -z "$TASK" ]; then
             echo "No /task message found"
+            exit 0
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
+
+          PROMPT="You are working in GitHub repository PyCharmerFame/JulesBot.
+
+Task from Telegram:
+${TASK}
+
+Rules:
+- Analyze the repository first.
+- Make the smallest safe changes.
+- Update README if needed.
+- Create a Pull Request.
+- Do not ask questions. Decide and proceed."
+
+          curl -f 'https://jules.googleapis.com/v1alpha/sessions' \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Goog-Api-Key: ${JULES_API_KEY}" \
+            -d "$(jq -n \
+              --arg prompt "$PROMPT" \
+              --arg source "sources/github/${{ github.repository }}" \
+              '{
+                "prompt": $prompt,
+                "sourceContext": {
+                  "source": $source,
+                  "githubRepoContext": {
+                    "startingBranch": "main"
+                  }
+                },
+                "automationMode": "AUTO_CREATE_PR",
+                "title": "Telegram Task"
+              }')"
+
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT_ID}" \
+            -d text="✅ Задача отправлена в Jules. Жди Pull Request."
