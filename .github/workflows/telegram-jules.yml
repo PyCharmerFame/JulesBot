@@ -1,0 +1,86 @@
+name: Telegram to Jules
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  telegram-to-jules:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Read Telegram messages
+        id: tg
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          LAST_TG_UPDATE_ID: ${{ vars.LAST_TG_UPDATE_ID }}
+        run: |
+          OFFSET=$((LAST_TG_UPDATE_ID + 1))
+
+          curl -s "https://api.telegram.org/bot${TG_BOT_TOKEN}/getUpdates?offset=${OFFSET}" > updates.json
+
+          LATEST_ID=$(jq '[.result[].update_id] | max // empty' updates.json)
+
+          TASK=$(jq -r --arg chat "$TG_CHAT_ID" '
+            .result[]
+            | select(.message.chat.id|tostring == $chat)
+            | select(.message.text | startswith("/task "))
+            | .message.text
+            ' updates.json | tail -n 1 | sed 's#^/task ##')
+
+          if [ -n "$LATEST_ID" ]; then
+            echo "latest_id=$LATEST_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -n "$TASK" ]; then
+            {
+              echo "task<<EOF"
+              echo "$TASK"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save Telegram offset
+        if: steps.tg.outputs.latest_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST_ID: ${{ steps.tg.outputs.latest_id }}
+        run: |
+          gh api \
+            --method PATCH \
+            repos/${{ github.repository }}/actions/variables/LAST_TG_UPDATE_ID \
+            -f name=LAST_TG_UPDATE_ID \
+            -f value="$LATEST_ID"
+
+      - name: Tell Telegram task was received
+        if: steps.tg.outputs.task != ''
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT_ID}" \
+            -d text="✅ Задача принята. Запускаю Jules."
+
+      - name: Run Jules
+        if: steps.tg.outputs.task != ''
+        uses: google-labs-code/jules-invoke@v1
+        with:
+          jules_api_key: ${{ secrets.JULES_API_KEY }}
+          prompt: |
+            You are working in this GitHub repository.
+
+            Task from Telegram:
+            ${{ steps.tg.outputs.task }}
+
+            Requirements:
+            - Analyze the codebase first.
+            - Make the smallest safe change.
+            - Run tests if available.
+            - Create a pull request with a clear description.
