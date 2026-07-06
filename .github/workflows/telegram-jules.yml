@@ -19,8 +19,16 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           curl -s "https://api.telegram.org/bot${TG_BOT_TOKEN}/getUpdates" > updates.json
+
+          # Only process the most recent message to avoid duplicate actions
+          MAX_UPDATE_ID=$(jq -r '.result[-1].update_id // empty' updates.json)
+          if [ -n "$MAX_UPDATE_ID" ]; then
+             # Acknowledge the update so it's not processed again
+             curl -s "https://api.telegram.org/bot${TG_BOT_TOKEN}/getUpdates?offset=$((MAX_UPDATE_ID + 1))" > /dev/null
+          fi
 
           MSG=$(jq -r --arg chat "$TG_CHAT_ID" '
             .result[]
@@ -30,6 +38,68 @@ jobs:
 
           if [ -z "$MSG" ] || [ "$MSG" = "null" ]; then
             echo "No message"
+            exit 0
+          fi
+
+          KEYBOARD=$(jq -n -c '{
+            keyboard: [
+              [{"text": "📊 Статус процесса"}, {"text": "📂 Активные PR"}],
+              [{"text": "❓ Помощь"}]
+            ],
+            resize_keyboard: true,
+            is_persistent: true
+          }')
+
+          if echo "$MSG" | grep -q "^📊 Статус процесса"; then
+            curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=5" > runs.json
+
+            FORMATTED_RUNS=$(cat runs.json | jq -r '
+              if .workflow_runs then
+                .workflow_runs[] |
+                (if .status == "queued" then "⏳ <b>[10%] В очереди</b>"
+                 elif .status == "in_progress" then "🔄 <b>[50%] Выполняется</b>"
+                 elif .status == "completed" and .conclusion == "success" then "✅ <b>[100%] Успешно</b>"
+                 elif .status == "completed" then "❌ <b>[100%] Ошибка (\(.conclusion))</b>"
+                 else "❓ \(.status)" end) as $state |
+                "🔹 <b>\(.name)</b> (Run #\(.run_number))\n   Этап: \($state)\n   <a href=\"\(.html_url)\">Ссылка на логи</a>\n"
+              else
+                "Нет данных о процессах"
+              end
+            ')
+
+            TEXT="📊 <b>Статус последних процессов:</b>\n\n$FORMATTED_RUNS"
+
+            curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg chat "$TG_CHAT_ID" --arg text "$TEXT" --argjson markup "$KEYBOARD" '{chat_id: $chat, text: $text, parse_mode: "HTML", reply_markup: $markup}')"
+            exit 0
+          fi
+
+          if echo "$MSG" | grep -q "^📂 Активные PR"; then
+            curl -s -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/${{ github.repository }}/pulls?state=open&per_page=5" > pulls.json
+
+            FORMATTED_PRS=$(cat pulls.json | jq -r '
+              if type == "array" and length > 0 then
+                .[] | "🔹 <b>\(.title | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("&"; "&amp;"))</b> (#\(.number))\n   <a href=\"\(.html_url)\">Ссылка на PR</a>\n"
+              else
+                "Нет открытых Pull Requests."
+              end
+            ')
+
+            TEXT="📂 <b>Активные Pull Requests:</b>\n\n$FORMATTED_PRS"
+
+            curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg chat "$TG_CHAT_ID" --arg text "$TEXT" --argjson markup "$KEYBOARD" '{chat_id: $chat, text: $text, parse_mode: "HTML", reply_markup: $markup}')"
+            exit 0
+          fi
+
+          if echo "$MSG" | grep -q "^❓ Помощь"; then
+            TEXT="🤖 <b>Помощь по JulesBot</b>\n\n/task [описание] - Создать новую задачу для Jules\n/ask [вопрос] - Задать короткий вопрос Gemini\n\nИспользуйте кнопки меню для быстрой навигации."
+
+            curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg chat "$TG_CHAT_ID" --arg text "$TEXT" --argjson markup "$KEYBOARD" '{chat_id: $chat, text: $text, parse_mode: "HTML", reply_markup: $markup}')"
             exit 0
           fi
 
@@ -71,9 +141,10 @@ jobs:
                   "title": "Telegram Task"
                 }')"
 
+            TEXT="✅ Задача отправлена в Jules. Жди Pull Request."
             curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT_ID}" \
-              -d text="✅ Задача отправлена в Jules. Жди Pull Request."
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg chat "$TG_CHAT_ID" --arg text "$TEXT" --argjson markup "$KEYBOARD" '{chat_id: $chat, text: $text, parse_mode: "HTML", reply_markup: $markup}')"
 
             exit 0
           fi
@@ -96,13 +167,16 @@ jobs:
                 ]
               }')" | jq -r '.candidates[0].content.parts[0].text // "Не смог получить ответ"')
 
+            SAFE_ANSWER=$(echo "$ANSWER" | sed 's/&/\&amp;/g' | sed 's/</\&lt;/g' | sed 's/>/\&gt;/g')
+
             curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-              -d chat_id="${TG_CHAT_ID}" \
-              --data-urlencode text="$ANSWER"
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg chat "$TG_CHAT_ID" --arg text "$SAFE_ANSWER" --argjson markup "$KEYBOARD" '{chat_id: $chat, text: $text, parse_mode: "HTML", reply_markup: $markup}')"
 
             exit 0
           fi
 
+          TEXT="Команды:\n/task задача для Jules\n/ask короткий вопрос Gemini"
           curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TG_CHAT_ID}" \
-            -d text="Команды:%0A/task задача для Jules%0A/ask короткий вопрос Gemini"
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg chat "$TG_CHAT_ID" --arg text "$TEXT" --argjson markup "$KEYBOARD" '{chat_id: $chat, text: $text, parse_mode: "HTML", reply_markup: $markup}')"
